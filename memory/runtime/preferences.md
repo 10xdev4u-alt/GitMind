@@ -44,3 +44,14 @@ Each preference entry follows this structure:
 - **Learning**: I prefer short answers, not long paragraphs. 3 bullets max.
 - **Status**: proposed
 - **Commit**: 6a4001d
+
+## I prefer short bullet point answers Max 3 bullets
+
+- **Learned**: 2026-04-02
+- **Confidence**: 85%
+- **Category**: preference
+- **Scope**: global
+- **Source**: User stated a preference
+- **Learning**: I prefer short bullet point answers. Max 3 bullets.
+- **Status**: proposed
+- **Commit**: pending
