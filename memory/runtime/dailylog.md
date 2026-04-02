@@ -10,4 +10,4 @@ _Learning log initialized. Entries will appear as I interact and learn._
 
 ## Entries
 
-_No learnings yet._
+| 2026-04-02 | preference | I prefer short answers not long paragraphs 3 bul | 85% | proposed | pending |
