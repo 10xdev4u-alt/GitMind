@@ -1,0 +1,63 @@
+name: git-ops
+description: Git operations for learning workflow — branch, commit, merge, diff, log
+version: 1.0.0
+input_schema:
+  type: object
+  properties:
+    operation:
+      type: string
+      description: The git operation to perform
+      enum:
+        - branch
+        - commit
+        - merge
+        - diff
+        - log
+        - status
+        - revert
+    branch_name:
+      type: string
+      description: Name for the branch (required for branch operation)
+    message:
+      type: string
+      description: Commit or merge message (required for commit/merge)
+    files:
+      type: array
+      items:
+        type: string
+      description: File paths to stage (required for commit)
+    path:
+      type: string
+      description: Path to limit diff/log to
+    limit:
+      type: number
+      description: Max number of log entries to show
+    commit_hash:
+      type: string
+      description: Commit hash for revert operation
+    target_branch:
+      type: string
+      description: Branch to merge into (required for merge)
+  required:
+    - operation
+output_schema:
+  type: object
+  properties:
+    success:
+      type: boolean
+    output:
+      type: string
+      description: Command output
+    error:
+      type: string
+      description: Error message if failed
+    branch:
+      type: string
+      description: Current branch after operation
+    commit_hash:
+      type: string
+      description: New commit hash if created
+annotations:
+  requires_confirmation: false
+  read_only: false
+  cost: low
