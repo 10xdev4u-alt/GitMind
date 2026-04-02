@@ -1,0 +1,6 @@
+node_modules/
+.gitagent/
+.env
+.env.local
+*.log
+.DS_Store
