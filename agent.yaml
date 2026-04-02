@@ -6,9 +6,10 @@ author: gitmind-hackathon
 license: MIT
 
 model:
-  preferred: claude-sonnet-4-5-20250929
+  preferred: groq:meta-llama/llama-4-scout-17b-16e-instruct
   fallback:
-    - openai:gpt-4o
+    - groq:llama-3.3-70b-versatile
+    - google:gemini-2.0-flash
   constraints:
     temperature: 0.7
     max_tokens: 4096

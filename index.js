@@ -8,26 +8,52 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const git = simpleGit(__dirname);
 
-// ── Preflight Checks ────────────────────────────────────
-const API_KEY = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
-if (!API_KEY) {
+// ── Preflight: Detect available free provider ───────────
+const PROVIDERS = [
+  { name: "groq", envVar: "GROQ_API_KEY", model: "groq:meta-llama/llama-4-scout-17b-16e-instruct", label: "Groq (Llama 4 Scout — FREE 30K TPM)" },
+  { name: "google", envVar: "GEMINI_API_KEY", model: "google:gemini-2.0-flash", label: "Google Gemini 2.0 Flash (FREE)" },
+  { name: "openrouter", envVar: "OPENROUTER_API_KEY", model: "openrouter:meta-llama/llama-3.1-8b-instruct:free", label: "OpenRouter Llama 3.1 8B (FREE)" },
+  { name: "cerebras", envVar: "CEREBRAS_API_KEY", model: "cerebras:llama3.1-8b", label: "Cerebras Llama 3.1 8B (FREE)" },
+  { name: "mistral", envVar: "MISTRAL_API_KEY", model: "mistral:mistral-small-latest", label: "Mistral Small (FREE tier)" },
+  { name: "anthropic", envVar: "ANTHROPIC_API_KEY", model: "anthropic:claude-sonnet-4-5-20250929", label: "Anthropic Claude Sonnet" },
+  { name: "openai", envVar: "OPENAI_API_KEY", model: "openai:gpt-4o", label: "OpenAI GPT-4o" },
+];
+
+let activeProvider = null;
+for (const p of PROVIDERS) {
+  if (process.env[p.envVar]) {
+    activeProvider = p;
+    break;
+  }
+}
+
+if (!activeProvider) {
   console.error(`
 ╔══════════════════════════════════════════════════════════════╗
 ║ ❌ No API key found!                                        ║
 ║                                                             ║
-║ Set one of these environment variables:                     ║
-║   export ANTHROPIC_API_KEY="sk-ant-..."                     ║
-║   export OPENAI_API_KEY="sk-..."                            ║
+║ Set ONE of these (all have FREE tiers):                     ║
+║                                                             ║
+║   🆓 GROQ_API_KEY       → groq.com (fastest, Llama 3.3)   ║
+║   🆓 GEMINI_API_KEY     → aistudio.google.com (Gemini)     ║
+║   🆓 OPENROUTER_API_KEY → openrouter.ai (many free models) ║
+║   🆓 CEREBRAS_API_KEY   → cerebras.ai (fast Llama)         ║
+║   🆓 MISTRAL_API_KEY    → mistral.ai (free tier)           ║
+║   💰 ANTHROPIC_API_KEY  → anthropic.com (Claude)           ║
+║   💰 OPENAI_API_KEY     → platform.openai.com (GPT)        ║
+║                                                             ║
+║ Cheapest start:                                             ║
+║   1. Go to https://console.groq.com                         ║
+║   2. Create free account                                    ║
+║   3. Get API key                                            ║
+║   4. export GROQ_API_KEY="gsk_..."                          ║
+║   5. node index.js                                          ║
 ╚══════════════════════════════════════════════════════════════╝
 `);
   process.exit(1);
 }
 
-const provider = process.env.ANTHROPIC_API_KEY ? "anthropic" : "openai";
-const modelId =
-  provider === "anthropic"
-    ? "anthropic:claude-sonnet-4-5-20250929"
-    : "openai:gpt-4o";
+const modelId = activeProvider.model;
 
 // ── Ensure memory directories exist ─────────────────────
 const dirs = [
@@ -111,11 +137,10 @@ function appendLearning(learning) {
 }
 
 // ── Helper: Update commit hash in preferences ───────────
-function updateCommitHash(oldHash, newHash) {
+function updateCommitHash(newHash) {
   const prefsPath = join(__dirname, "memory", "runtime", "preferences.md");
   if (!existsSync(prefsPath)) return;
   let content = readFileSync(prefsPath, "utf-8");
-  // Find the LAST occurrence of "Commit: pending" and update it
   const lastPending = content.lastIndexOf("**Commit**: pending");
   if (lastPending !== -1) {
     content =
@@ -136,10 +161,9 @@ async function getCurrentBranch() {
 // TOOLS
 // ══════════════════════════════════════════════════════════
 
-// ── Tool: learn ─────────────────────────────────────────
 const learnTool = tool(
   "learn",
-  "Record a learning from the conversation. Call this when the user corrects you, states a preference, or shares knowledge you didn't have.",
+  "Record a learning from the conversation. Use when the user corrects you, states a preference, or shares new knowledge.",
   {
     properties: {
       category: {
@@ -169,13 +193,12 @@ const learnTool = tool(
   async (args) => {
     appendLearning(args);
     return {
-      text: `📝 Learning recorded: "${args.title}" (${args.category}, ${args.confidence}%)`,
+      text: `Learning recorded: "${args.title}" (${args.category}, ${args.confidence}%)`,
       details: args,
     };
   }
 );
 
-// ── Tool: commit-learning ───────────────────────────────
 const commitTool = tool(
   "commit-learning",
   "Commit the learning to git on a dedicated branch. Call AFTER the learn tool records it.",
@@ -195,44 +218,34 @@ const commitTool = tool(
     const origBranch = await getCurrentBranch();
 
     try {
-      // Create and switch to learning branch
       await git.checkoutLocalBranch(branch);
-
-      // Stage and commit memory files
       await git.add(["memory/"]);
       const fullMsg = `learning: ${args.category} - ${args.message}`;
       await git.commit(fullMsg);
 
-      // Get commit hash
       const log = await git.log({ maxCount: 1 });
       const hash = log.latest.hash.slice(0, 7);
 
-      // Update preferences with real commit hash
-      updateCommitHash("pending", hash);
+      updateCommitHash(hash);
       await git.add(["memory/"]);
       await git.commit(`update: tag learning with hash ${hash}`);
 
-      // Switch back
       await git.checkout(origBranch);
 
       return {
-        text: `✅ Committed on branch \`${branch}\` (commit: ${hash})`,
+        text: `Committed on branch ${branch} (commit: ${hash})`,
         details: { branch, hash },
       };
     } catch (err) {
-      // Safety: always return to original branch
-      try {
-        await git.checkout(origBranch);
-      } catch {}
-      return { text: `❌ Commit failed: ${err.message}` };
+      try { await git.checkout(origBranch); } catch {}
+      return { text: `Commit failed: ${err.message}` };
     }
   }
 );
 
-// ── Tool: show-diff ─────────────────────────────────────
 const diffTool = tool(
   "show-diff",
-  "Show the git diff of a learning branch vs main. Call this to show the user what was learned.",
+  "Show the git diff of a learning branch vs main.",
   {
     properties: {
       branch: { type: "string", description: "Branch name" },
@@ -244,12 +257,11 @@ const diffTool = tool(
       const diff = await git.diff([`main...${args.branch}`, "--", "memory/"]);
       return { text: diff || "(no changes found)" };
     } catch (err) {
-      return { text: `❌ Diff error: ${err.message}` };
+      return { text: `Diff error: ${err.message}` };
     }
   }
 );
 
-// ── Tool: merge-learning ────────────────────────────────
 const mergeTool = tool(
   "merge-learning",
   "Merge an approved learning branch into main. Call after user approves.",
@@ -261,28 +273,22 @@ const mergeTool = tool(
   },
   async (args) => {
     try {
-      await git.merge([
-        args.branch,
-        "--no-ff",
-        "-m",
-        `merge: approved ${args.branch}`,
-      ]);
+      await git.merge([args.branch, "--no-ff", "-m", `merge: approved ${args.branch}`]);
       await git.deleteLocalBranch(args.branch, true);
 
       const log = await git.log({ maxCount: 1 });
       const hash = log.latest.hash.slice(0, 7);
 
       return {
-        text: `🎉 Learning merged! Commit: ${hash}. I have evolved.`,
+        text: `Learning merged! Commit: ${hash}. I have evolved.`,
         details: { hash },
       };
     } catch (err) {
-      return { text: `❌ Merge failed: ${err.message}` };
+      return { text: `Merge failed: ${err.message}` };
     }
   }
 );
 
-// ── Tool: reject-learning ───────────────────────────────
 const rejectTool = tool(
   "reject-learning",
   "Discard a learning branch. Call when user rejects.",
@@ -295,17 +301,16 @@ const rejectTool = tool(
   async (args) => {
     try {
       await git.deleteLocalBranch(args.branch, true);
-      return { text: "🗑️ Learning discarded. No changes made." };
+      return { text: "Learning discarded. No changes made." };
     } catch (err) {
-      return { text: `❌ Error: ${err.message}` };
+      return { text: `Error: ${err.message}` };
     }
   }
 );
 
-// ── Tool: git-log-memory ────────────────────────────────
 const logTool = tool(
   "git-log-memory",
-  "Show git log for memory/ directory — the learning history.",
+  "Show git log for memory/ — the learning history.",
   {
     properties: {
       limit: { type: "number", description: "Max entries (default 10)" },
@@ -313,10 +318,7 @@ const logTool = tool(
   },
   async (args) => {
     try {
-      const log = await git.log({
-        file: "memory/",
-        maxCount: args.limit || 10,
-      });
+      const log = await git.log({ file: "memory/", maxCount: args.limit || 10 });
       if (log.all.length === 0) return { text: "No learning commits yet." };
 
       const lines = log.all.map(
@@ -324,12 +326,11 @@ const logTool = tool(
       );
       return { text: lines.join("\n") };
     } catch (err) {
-      return { text: `❌ Log error: ${err.message}` };
+      return { text: `Log error: ${err.message}` };
     }
   }
 );
 
-// ── All tools ───────────────────────────────────────────
 const tools = [learnTool, commitTool, diffTool, mergeTool, rejectTool, logTool];
 
 // ══════════════════════════════════════════════════════════
@@ -343,6 +344,7 @@ console.log(`
 ║ 🧠 GitMind v1.0.0                                          ║
 ║ Self-Evolving Agent with Git Memory                         ║
 ║                                                             ║
+║ Provider: ${activeProvider.label.padEnd(47)}║
 ║ Model: ${modelId.padEnd(50)}║
 ║ Memory: ${countLearnings()} learnings${"".padEnd(43 - countLearnings().toString().length)}║
 ║ Branch: main                                                ║
@@ -361,9 +363,9 @@ async function chat() {
 
     if (!input.trim()) continue;
     if (input.toLowerCase() === "exit" || input.toLowerCase() === "quit") {
-      console.log(`\n👋 Session ended.`);
-      console.log(`   Learnings: ${countLearnings()}`);
-      console.log(`   History: git log --oneline memory/\n`);
+      console.log(`\nSession ended.`);
+      console.log(`Learnings: ${countLearnings()}`);
+      console.log(`History: git log --oneline memory/\n`);
       rl.close();
       break;
     }
@@ -383,33 +385,32 @@ async function chat() {
             process.stdout.write(msg.content);
             break;
           case "tool_use":
-            process.stdout.write(`\n  ⚙️ [${msg.toolName}]`);
+            process.stdout.write(`\n  [${msg.toolName}]`);
             break;
           case "tool_result":
             if (msg.isError) {
-              process.stdout.write(`\n  ❌ ${msg.content}`);
+              process.stdout.write(`\n  X ${msg.content}`);
             } else {
-              process.stdout.write(`\n  ✓ ${msg.content}`);
+              process.stdout.write(`\n  > ${msg.content}`);
             }
             break;
           case "system":
             if (msg.subtype === "error") {
-              process.stdout.write(`\n  ❌ System: ${msg.content}`);
+              process.stdout.write(`\n  X System: ${msg.content}`);
             }
             break;
         }
       }
     } catch (err) {
-      process.stdout.write(`\n  ❌ ${err.message}`);
+      process.stdout.write(`\n  X ${err.message}`);
     }
 
     console.log("\n");
   }
 }
 
-// Handle Ctrl+C gracefully
 process.on("SIGINT", () => {
-  console.log(`\n\n👋 Interrupted. Learnings: ${countLearnings()}\n`);
+  console.log(`\n\nInterrupted. Learnings: ${countLearnings()}\n`);
   rl.close();
   process.exit(0);
 });
