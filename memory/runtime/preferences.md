@@ -21,4 +21,15 @@ Each preference entry follows this structure:
 
 ## Learned Preferences
 
-_No entries yet._
+
+## Test Learning: Bullet Point Format
+
+- **Learned**: 2026-04-02
+- **Confidence**: 95%
+- **Category**: preference
+- **Scope**: global
+- **Source**: Test run
+- **Learning**: User prefers bullet points over paragraphs
+- **Status**: proposed
+- **Commit**: pending
+
