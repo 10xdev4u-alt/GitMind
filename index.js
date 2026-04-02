@@ -1,0 +1,417 @@
+import { query, tool } from "gitclaw";
+import simpleGit from "simple-git";
+import { createInterface } from "readline";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const git = simpleGit(__dirname);
+
+// ── Preflight Checks ────────────────────────────────────
+const API_KEY = process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY;
+if (!API_KEY) {
+  console.error(`
+╔══════════════════════════════════════════════════════════════╗
+║ ❌ No API key found!                                        ║
+║                                                             ║
+║ Set one of these environment variables:                     ║
+║   export ANTHROPIC_API_KEY="sk-ant-..."                     ║
+║   export OPENAI_API_KEY="sk-..."                            ║
+╚══════════════════════════════════════════════════════════════╝
+`);
+  process.exit(1);
+}
+
+const provider = process.env.ANTHROPIC_API_KEY ? "anthropic" : "openai";
+const modelId =
+  provider === "anthropic"
+    ? "anthropic:claude-sonnet-4-5-20250929"
+    : "openai:gpt-4o";
+
+// ── Ensure memory directories exist ─────────────────────
+const dirs = [
+  join(__dirname, "memory"),
+  join(__dirname, "memory", "runtime"),
+  join(__dirname, "memory", "approved"),
+];
+for (const d of dirs) {
+  if (!existsSync(d)) mkdirSync(d, { recursive: true });
+}
+
+// ── Helper: Today's date ────────────────────────────────
+function today() {
+  return new Date().toISOString().split("T")[0];
+}
+
+// ── Helper: Sanitize slug for branch names ───────────────
+function sanitizeSlug(str) {
+  return str
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 40);
+}
+
+// ── Helper: Generate branch name ────────────────────────
+function makeBranchName(category, slug) {
+  return `learning/${category}-${sanitizeSlug(slug)}-${today()}`;
+}
+
+// ── Helper: Count learnings ─────────────────────────────
+function countLearnings() {
+  const p = join(__dirname, "memory", "runtime", "preferences.md");
+  if (!existsSync(p)) return 0;
+  const c = readFileSync(p, "utf-8");
+  return (c.match(/^## /gm) || []).length;
+}
+
+// ── Helper: Append learning to preferences.md ───────────
+function appendLearning(learning) {
+  const prefsPath = join(__dirname, "memory", "runtime", "preferences.md");
+
+  const entry = [
+    `## ${learning.title}`,
+    "",
+    `- **Learned**: ${today()}`,
+    `- **Confidence**: ${learning.confidence}%`,
+    `- **Category**: ${learning.category}`,
+    `- **Scope**: ${learning.scope || "global"}`,
+    `- **Source**: ${learning.source}`,
+    `- **Learning**: ${learning.description}`,
+    `- **Status**: proposed`,
+    `- **Commit**: pending`,
+    "",
+  ].join("\n");
+
+  if (existsSync(prefsPath)) {
+    let content = readFileSync(prefsPath, "utf-8");
+    if (content.includes("_No entries yet._")) {
+      content = content.replace("_No entries yet._", entry);
+    } else {
+      content += "\n" + entry;
+    }
+    writeFileSync(prefsPath, content);
+  }
+
+  // Update daily log
+  const logPath = join(__dirname, "memory", "runtime", "dailylog.md");
+  if (existsSync(logPath)) {
+    let logContent = readFileSync(logPath, "utf-8");
+    const row = `| ${today()} | ${learning.category} | ${learning.title} | ${learning.confidence}% | proposed | pending |`;
+    if (logContent.includes("_No learnings yet._")) {
+      logContent = logContent.replace("_No learnings yet._", row);
+    } else {
+      logContent += "\n" + row;
+    }
+    writeFileSync(logPath, logContent);
+  }
+
+  return entry;
+}
+
+// ── Helper: Update commit hash in preferences ───────────
+function updateCommitHash(oldHash, newHash) {
+  const prefsPath = join(__dirname, "memory", "runtime", "preferences.md");
+  if (!existsSync(prefsPath)) return;
+  let content = readFileSync(prefsPath, "utf-8");
+  // Find the LAST occurrence of "Commit: pending" and update it
+  const lastPending = content.lastIndexOf("**Commit**: pending");
+  if (lastPending !== -1) {
+    content =
+      content.slice(0, lastPending) +
+      `**Commit**: ${newHash}` +
+      content.slice(lastPending + "**Commit**: pending".length);
+    writeFileSync(prefsPath, content);
+  }
+}
+
+// ── Helper: Get current branch ──────────────────────────
+async function getCurrentBranch() {
+  const status = await git.status();
+  return status.current;
+}
+
+// ══════════════════════════════════════════════════════════
+// TOOLS
+// ══════════════════════════════════════════════════════════
+
+// ── Tool: learn ─────────────────────────────────────────
+const learnTool = tool(
+  "learn",
+  "Record a learning from the conversation. Call this when the user corrects you, states a preference, or shares knowledge you didn't have.",
+  {
+    properties: {
+      category: {
+        type: "string",
+        enum: ["preference", "correction", "fact", "context", "workflow"],
+        description: "Type of learning",
+      },
+      title: {
+        type: "string",
+        description: "Short title, e.g. 'Concise Responses'",
+      },
+      description: {
+        type: "string",
+        description: "Full description of what was learned",
+      },
+      confidence: {
+        type: "number",
+        description: "Confidence 0-100",
+      },
+      source: {
+        type: "string",
+        description: "What triggered this learning",
+      },
+    },
+    required: ["category", "title", "description", "confidence", "source"],
+  },
+  async (args) => {
+    appendLearning(args);
+    return {
+      text: `📝 Learning recorded: "${args.title}" (${args.category}, ${args.confidence}%)`,
+      details: args,
+    };
+  }
+);
+
+// ── Tool: commit-learning ───────────────────────────────
+const commitTool = tool(
+  "commit-learning",
+  "Commit the learning to git on a dedicated branch. Call AFTER the learn tool records it.",
+  {
+    properties: {
+      category: { type: "string", description: "Learning category" },
+      slug: {
+        type: "string",
+        description: "Short slug for branch name, e.g. 'concise-responses'",
+      },
+      message: { type: "string", description: "Commit message" },
+    },
+    required: ["category", "slug", "message"],
+  },
+  async (args) => {
+    const branch = makeBranchName(args.category, args.slug);
+    const origBranch = await getCurrentBranch();
+
+    try {
+      // Create and switch to learning branch
+      await git.checkoutLocalBranch(branch);
+
+      // Stage and commit memory files
+      await git.add(["memory/"]);
+      const fullMsg = `learning: ${args.category} - ${args.message}`;
+      await git.commit(fullMsg);
+
+      // Get commit hash
+      const log = await git.log({ maxCount: 1 });
+      const hash = log.latest.hash.slice(0, 7);
+
+      // Update preferences with real commit hash
+      updateCommitHash("pending", hash);
+      await git.add(["memory/"]);
+      await git.commit(`update: tag learning with hash ${hash}`);
+
+      // Switch back
+      await git.checkout(origBranch);
+
+      return {
+        text: `✅ Committed on branch \`${branch}\` (commit: ${hash})`,
+        details: { branch, hash },
+      };
+    } catch (err) {
+      // Safety: always return to original branch
+      try {
+        await git.checkout(origBranch);
+      } catch {}
+      return { text: `❌ Commit failed: ${err.message}` };
+    }
+  }
+);
+
+// ── Tool: show-diff ─────────────────────────────────────
+const diffTool = tool(
+  "show-diff",
+  "Show the git diff of a learning branch vs main. Call this to show the user what was learned.",
+  {
+    properties: {
+      branch: { type: "string", description: "Branch name" },
+    },
+    required: ["branch"],
+  },
+  async (args) => {
+    try {
+      const diff = await git.diff([`main...${args.branch}`, "--", "memory/"]);
+      return { text: diff || "(no changes found)" };
+    } catch (err) {
+      return { text: `❌ Diff error: ${err.message}` };
+    }
+  }
+);
+
+// ── Tool: merge-learning ────────────────────────────────
+const mergeTool = tool(
+  "merge-learning",
+  "Merge an approved learning branch into main. Call after user approves.",
+  {
+    properties: {
+      branch: { type: "string", description: "Branch to merge" },
+    },
+    required: ["branch"],
+  },
+  async (args) => {
+    try {
+      await git.merge([
+        args.branch,
+        "--no-ff",
+        "-m",
+        `merge: approved ${args.branch}`,
+      ]);
+      await git.deleteLocalBranch(args.branch, true);
+
+      const log = await git.log({ maxCount: 1 });
+      const hash = log.latest.hash.slice(0, 7);
+
+      return {
+        text: `🎉 Learning merged! Commit: ${hash}. I have evolved.`,
+        details: { hash },
+      };
+    } catch (err) {
+      return { text: `❌ Merge failed: ${err.message}` };
+    }
+  }
+);
+
+// ── Tool: reject-learning ───────────────────────────────
+const rejectTool = tool(
+  "reject-learning",
+  "Discard a learning branch. Call when user rejects.",
+  {
+    properties: {
+      branch: { type: "string", description: "Branch to delete" },
+    },
+    required: ["branch"],
+  },
+  async (args) => {
+    try {
+      await git.deleteLocalBranch(args.branch, true);
+      return { text: "🗑️ Learning discarded. No changes made." };
+    } catch (err) {
+      return { text: `❌ Error: ${err.message}` };
+    }
+  }
+);
+
+// ── Tool: git-log-memory ────────────────────────────────
+const logTool = tool(
+  "git-log-memory",
+  "Show git log for memory/ directory — the learning history.",
+  {
+    properties: {
+      limit: { type: "number", description: "Max entries (default 10)" },
+    },
+  },
+  async (args) => {
+    try {
+      const log = await git.log({
+        file: "memory/",
+        maxCount: args.limit || 10,
+      });
+      if (log.all.length === 0) return { text: "No learning commits yet." };
+
+      const lines = log.all.map(
+        (e) => `${e.hash.slice(0, 7)} ${e.date.slice(0, 10)} ${e.message}`
+      );
+      return { text: lines.join("\n") };
+    } catch (err) {
+      return { text: `❌ Log error: ${err.message}` };
+    }
+  }
+);
+
+// ── All tools ───────────────────────────────────────────
+const tools = [learnTool, commitTool, diffTool, mergeTool, rejectTool, logTool];
+
+// ══════════════════════════════════════════════════════════
+// INTERACTIVE LOOP
+// ══════════════════════════════════════════════════════════
+
+const rl = createInterface({ input: process.stdin, output: process.stdout });
+
+console.log(`
+╔══════════════════════════════════════════════════════════════╗
+║ 🧠 GitMind v1.0.0                                          ║
+║ Self-Evolving Agent with Git Memory                         ║
+║                                                             ║
+║ Model: ${modelId.padEnd(50)}║
+║ Memory: ${countLearnings()} learnings${"".padEnd(43 - countLearnings().toString().length)}║
+║ Branch: main                                                ║
+║                                                             ║
+║ Type your message. Type "exit" to quit.                     ║
+╚══════════════════════════════════════════════════════════════╝
+`);
+
+function ask(prompt) {
+  return new Promise((resolve) => rl.question(prompt, resolve));
+}
+
+async function chat() {
+  while (true) {
+    const input = await ask("\nYou: ");
+
+    if (!input.trim()) continue;
+    if (input.toLowerCase() === "exit" || input.toLowerCase() === "quit") {
+      console.log(`\n👋 Session ended.`);
+      console.log(`   Learnings: ${countLearnings()}`);
+      console.log(`   History: git log --oneline memory/\n`);
+      rl.close();
+      break;
+    }
+
+    process.stdout.write("\nGitMind: ");
+
+    try {
+      for await (const msg of query({
+        prompt: input,
+        dir: __dirname,
+        model: modelId,
+        tools,
+        maxTurns: 20,
+      })) {
+        switch (msg.type) {
+          case "delta":
+            process.stdout.write(msg.content);
+            break;
+          case "tool_use":
+            process.stdout.write(`\n  ⚙️ [${msg.toolName}]`);
+            break;
+          case "tool_result":
+            if (msg.isError) {
+              process.stdout.write(`\n  ❌ ${msg.content}`);
+            } else {
+              process.stdout.write(`\n  ✓ ${msg.content}`);
+            }
+            break;
+          case "system":
+            if (msg.subtype === "error") {
+              process.stdout.write(`\n  ❌ System: ${msg.content}`);
+            }
+            break;
+        }
+      }
+    } catch (err) {
+      process.stdout.write(`\n  ❌ ${err.message}`);
+    }
+
+    console.log("\n");
+  }
+}
+
+// Handle Ctrl+C gracefully
+process.on("SIGINT", () => {
+  console.log(`\n\n👋 Interrupted. Learnings: ${countLearnings()}\n`);
+  rl.close();
+  process.exit(0);
+});
+
+chat();
