@@ -429,6 +429,45 @@ async function chat() {
       break;
     }
 
+    // Handle approve/reject
+    const lowerInput = input.toLowerCase().trim();
+    if (lowerInput === "approve" || lowerInput === "merge") {
+      const branches = await git.branchLocal();
+      const learningBranches = branches.all.filter(b => b.startsWith("learning/"));
+      if (learningBranches.length > 0) {
+        const branch = learningBranches[learningBranches.length - 1];
+        try {
+          await git.merge([branch, "--no-ff", "-m", `merge: approved ${branch}`]);
+          await git.deleteLocalBranch(branch, true);
+          const log = await git.log({ maxCount: 1 });
+          const hash = log.latest.hash.slice(0, 7);
+          console.log(`\nGitMind: Learning merged! Commit: ${hash}. I have evolved.\n`);
+        } catch (err) {
+          console.log(`\nGitMind: Merge failed: ${err.message}\n`);
+        }
+      } else {
+        console.log(`\nGitMind: No pending learnings to approve.\n`);
+      }
+      continue;
+    }
+
+    if (lowerInput === "reject" || lowerInput === "discard") {
+      const branches = await git.branchLocal();
+      const learningBranches = branches.all.filter(b => b.startsWith("learning/"));
+      if (learningBranches.length > 0) {
+        const branch = learningBranches[learningBranches.length - 1];
+        try {
+          await git.deleteLocalBranch(branch, true);
+          console.log(`\nGitMind: Learning discarded (${branch}). No changes made.\n`);
+        } catch (err) {
+          console.log(`\nGitMind: Error: ${err.message}\n`);
+        }
+      } else {
+        console.log(`\nGitMind: No pending learnings to reject.\n`);
+      }
+      continue;
+    }
+
     process.stdout.write("\nGitMind: ");
 
     try {
