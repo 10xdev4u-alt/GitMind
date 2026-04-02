@@ -157,6 +157,83 @@ async function getCurrentBranch() {
   return status.current;
 }
 
+// ── Helper: Detect learning signals ─────────────────────
+function detectLearning(input) {
+  const lower = input.toLowerCase();
+
+  // Preference patterns
+  const prefPatterns = [
+    /i prefer/i,
+    /i like .+ better/i,
+    /i want .+ (from now on|going forward)/i,
+    /keep (it|responses?) (short|brief|concise)/i,
+    /too (wordy|verbose|long)/i,
+    /(short|brief|concise) (answers?|responses?|replies?)/i,
+    /bullet points?/i,
+    /no (long |)paragraphs?/i,
+    /max (\d+) (bullets?|points?|sentences?)/i,
+  ];
+
+  // Correction patterns
+  const corrPatterns = [
+    /that'?s wrong/i,
+    /actually,?\s/i,
+    /no,?\s/i,
+    /correction:/i,
+    /it'?s (actually|not)/i,
+    /you'?re wrong/i,
+    /that'?s (not right|incorrect)/i,
+  ];
+
+  // Fact patterns
+  const factPatterns = [
+    /we use /i,
+    /our (team|project|company) /i,
+    /the correct /i,
+    /for your info/i,
+    /fyi/i,
+    /just so you know/i,
+  ];
+
+  for (const p of prefPatterns) {
+    if (p.test(input)) {
+      return {
+        category: "preference",
+        title: input.slice(0, 50).replace(/[^a-zA-Z0-9 ]/g, "").trim(),
+        description: input,
+        confidence: 85,
+        source: "User stated a preference",
+      };
+    }
+  }
+
+  for (const p of corrPatterns) {
+    if (p.test(input)) {
+      return {
+        category: "correction",
+        title: input.slice(0, 50).replace(/[^a-zA-Z0-9 ]/g, "").trim(),
+        description: input,
+        confidence: 90,
+        source: "User corrected the agent",
+      };
+    }
+  }
+
+  for (const p of factPatterns) {
+    if (p.test(input)) {
+      return {
+        category: "fact",
+        title: input.slice(0, 50).replace(/[^a-zA-Z0-9 ]/g, "").trim(),
+        description: input,
+        confidence: 80,
+        source: "User shared a fact",
+      };
+    }
+  }
+
+  return null;
+}
+
 // ══════════════════════════════════════════════════════════
 // TOOLS
 // ══════════════════════════════════════════════════════════
@@ -386,6 +463,39 @@ async function chat() {
       }
     } catch (err) {
       process.stdout.write(`\n  X ${err.message}`);
+    }
+
+    // Auto-detect learning signals and commit
+    const learning = detectLearning(input);
+    if (learning) {
+      console.log("\n  [auto-detect: learning signal detected]");
+      try {
+        // Record to memory
+        appendLearning(learning);
+
+        // Commit to git
+        const slug = learning.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30);
+        const branch = makeBranchName(learning.category, slug);
+        const origBranch = await getCurrentBranch();
+
+        await git.checkoutLocalBranch(branch);
+        await git.add(["memory/"]);
+        await git.commit(`learning: ${learning.category} - ${learning.title}`);
+
+        const log = await git.log({ maxCount: 1 });
+        const hash = log.latest.hash.slice(0, 7);
+
+        updateCommitHash(hash);
+        await git.add(["memory/"]);
+        await git.commit(`update: tag learning with hash ${hash}`);
+
+        await git.checkout(origBranch);
+
+        console.log(`  > Learning committed! Branch: ${branch} (${hash})`);
+        console.log(`  > Say "approve" to merge or "reject" to discard.`);
+      } catch (err) {
+        console.log(`  X Auto-learning failed: ${err.message}`);
+      }
     }
 
     console.log("\n");
