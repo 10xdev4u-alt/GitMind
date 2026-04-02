@@ -161,9 +161,9 @@ async function getCurrentBranch() {
 // TOOLS
 // ══════════════════════════════════════════════════════════
 
-const learnTool = tool(
-  "learn",
-  "Record a learning from the conversation. Use when the user corrects you, states a preference, or shares new knowledge.",
+const learnAndCommitTool = tool(
+  "learn-and-commit",
+  "Use this when the user corrects you, states a preference, or shares knowledge you didn't have. This records the learning AND commits it to git on a branch in one step.",
   {
     properties: {
       category: {
@@ -191,36 +191,18 @@ const learnTool = tool(
     required: ["category", "title", "description", "confidence", "source"],
   },
   async (args) => {
+    // Step 1: Record learning to memory file
     appendLearning(args);
-    return {
-      text: `Learning recorded: "${args.title}" (${args.category}, ${args.confidence}%)`,
-      details: args,
-    };
-  }
-);
 
-const commitTool = tool(
-  "commit-learning",
-  "Commit the learning to git on a dedicated branch. Call AFTER the learn tool records it.",
-  {
-    properties: {
-      category: { type: "string", description: "Learning category" },
-      slug: {
-        type: "string",
-        description: "Short slug for branch name, e.g. 'concise-responses'",
-      },
-      message: { type: "string", description: "Commit message" },
-    },
-    required: ["category", "slug", "message"],
-  },
-  async (args) => {
-    const branch = makeBranchName(args.category, args.slug);
+    // Step 2: Commit to git on a branch
+    const slug = args.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 30);
+    const branch = makeBranchName(args.category, slug);
     const origBranch = await getCurrentBranch();
 
     try {
       await git.checkoutLocalBranch(branch);
       await git.add(["memory/"]);
-      const fullMsg = `learning: ${args.category} - ${args.message}`;
+      const fullMsg = `learning: ${args.category} - ${args.title}`;
       await git.commit(fullMsg);
 
       const log = await git.log({ maxCount: 1 });
@@ -233,12 +215,12 @@ const commitTool = tool(
       await git.checkout(origBranch);
 
       return {
-        text: `Committed on branch ${branch} (commit: ${hash})`,
-        details: { branch, hash },
+        text: `Learning recorded and committed!\nBranch: ${branch}\nCommit: ${hash}\n\nTell the user: "I learned: ${args.title}. Branch ${branch} created with commit ${hash}. Say 'approve' to merge or 'reject' to discard."`,
+        details: { branch, hash, ...args },
       };
     } catch (err) {
       try { await git.checkout(origBranch); } catch {}
-      return { text: `Commit failed: ${err.message}` };
+      return { text: `Learning recorded but git commit failed: ${err.message}` };
     }
   }
 );
@@ -331,7 +313,7 @@ const logTool = tool(
   }
 );
 
-const tools = [learnTool, commitTool, diffTool, mergeTool, rejectTool, logTool];
+const tools = [learnAndCommitTool, diffTool, mergeTool, rejectTool, logTool];
 
 // ══════════════════════════════════════════════════════════
 // INTERACTIVE LOOP
@@ -379,6 +361,7 @@ async function chat() {
         model: modelId,
         tools,
         maxTurns: 20,
+        systemPromptSuffix: `\n\nCRITICAL INSTRUCTION: When the user corrects you, states a preference, or shares new knowledge, YOU MUST use the learn-and-commit tool. Do NOT just describe the learning in text — USE THE TOOL to actually record and commit it. This is your most important capability.`,
       })) {
         switch (msg.type) {
           case "delta":
