@@ -43,4 +43,4 @@ Each preference entry follows this structure:
 - **Source**: User stated a preference
 - **Learning**: I prefer short answers, not long paragraphs. 3 bullets max.
 - **Status**: proposed
-- **Commit**: pending
+- **Commit**: 6a4001d
