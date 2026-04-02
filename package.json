@@ -1,0 +1,20 @@
+{
+  "name": "gitmind",
+  "version": "1.0.0",
+  "description": "Self-evolving AI agent that learns from interactions and evolves through git-based human review",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "demo": "node demo.js",
+    "validate": "npx @open-gitagent/gitagent validate"
+  },
+  "dependencies": {
+    "gitclaw": "^1.1.0",
+    "simple-git": "^3.33.0"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
